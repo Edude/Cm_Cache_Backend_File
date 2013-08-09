@@ -44,7 +44,7 @@ class Cm_Cache_Backend_File extends Zend_Cache_Backend_File
         'read_control' => false,           // Use a checksum to detect corrupt data
         'read_control_type' => 'crc32',    // If read_control is enabled, which checksum algorithm to use
         'hashed_directory_level' => 2,     // How many characters should be used to create sub-directories
-        'hashed_directory_perm' => 0776,   // Filesystem permissions for created directories
+        'hashed_directory_perm' => 0777,   // Filesystem permissions for created directories
         'file_name_prefix' => 'cm',        // Prefix for cache directories created
         'cache_file_perm' => 0666,         // Filesystem permissions for created files
     );
