@@ -15,6 +15,7 @@ modification, are permitted provided that the following conditions are met:
       documentation and/or other materials provided with the distribution.
     * The name of Colin Mollenhour may not be used to endorse or promote products
       derived from this software without specific prior written permission.
+    * The class name must remain as Cm_Cache_Backend_File.
 
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
 ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
@@ -31,7 +32,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 /**
  * Cm_Cache_Backend_File
  *
- * @copyright  Copyright (c) 2012 Colin Mollenhour (http://colin.mollenhour.com)
+ * @copyright  Copyright (c) 2013 Colin Mollenhour (http://colin.mollenhour.com)
  * @license    http://framework.zend.com/license/new-bsd     New BSD License
  */
 class Cm_Cache_Backend_File extends Zend_Cache_Backend_File
@@ -40,13 +41,14 @@ class Cm_Cache_Backend_File extends Zend_Cache_Backend_File
     /** @var array */
     protected $_options = array(
         'cache_dir' => null,               // Path to cache files
+        'file_name_prefix' => 'cm',        // Prefix for cache directories created
         'file_locking' => true,            // Best to keep enabled
         'read_control' => false,           // Use a checksum to detect corrupt data
         'read_control_type' => 'crc32',    // If read_control is enabled, which checksum algorithm to use
         'hashed_directory_level' => 2,     // How many characters should be used to create sub-directories
-        'hashed_directory_perm' => 0777,   // Filesystem permissions for created directories
-        'file_name_prefix' => 'cm',        // Prefix for cache directories created
-        'cache_file_perm' => 0666,         // Filesystem permissions for created files
+        'use_chmod' => FALSE,              // Do not use chmod on files and directories (should use umask() to control permissions)
+        'directory_mode' => 0770,          // Filesystem permissions for created directories (requires use_chmod)
+        'file_mode' => 0660,               // Filesystem permissions for created files (requires use_chmod)
     );
 
     /** @var bool */
@@ -64,10 +66,10 @@ class Cm_Cache_Backend_File extends Zend_Cache_Backend_File
 
         // Backwards compatibility ZF 1.11 and ZF 1.12
         if (isset($options['hashed_directory_umask'])) {
-            $options['hashed_directory_perm'] = $options['hashed_directory_umask'];
+            $options['directory_mode'] = $options['hashed_directory_umask'];
         }
         if (isset($options['cache_file_umask'])) {
-            $options['cache_file_perm'] = $options['cache_file_umask'];
+            $options['file_mode'] = $options['cache_file_umask'];
         }
 
         // Don't use parent constructor
@@ -90,14 +92,14 @@ class Cm_Cache_Backend_File extends Zend_Cache_Backend_File
         }
 
         // See #ZF-4422
-        if (is_string($this->_options['hashed_directory_perm'])) {
-            $this->_options['hashed_directory_perm'] = octdec($this->_options['hashed_directory_perm']);
+        if (is_string($this->_options['directory_mode'])) {
+            $this->_options['directory_mode'] = octdec($this->_options['directory_mode']);
         }
-        if (is_string($this->_options['cache_file_perm'])) {
-            $this->_options['cache_file_perm'] = octdec($this->_options['cache_file_perm']);
+        if (is_string($this->_options['file_mode'])) {
+            $this->_options['file_mode'] = octdec($this->_options['file_mode']);
         }
-        $this->_options['hashed_directory_umask'] = $this->_options['hashed_directory_perm'];
-        $this->_options['cache_file_umask'] = $this->_options['cache_file_perm'];
+        $this->_options['hashed_directory_umask'] = $this->_options['directory_mode'];
+        $this->_options['cache_file_umask'] = $this->_options['file_mode'];
     }
 
     /**
@@ -386,7 +388,7 @@ class Cm_Cache_Backend_File extends Zend_Cache_Backend_File
      *
      * @param  string $id Cache id
      * @param  boolean $parts if true, returns array of directory parts instead of single string
-     * @return string Complete directory path
+     * @return string|array Complete directory path
      */
     protected function _path($id, $parts = false)
     {
@@ -436,10 +438,9 @@ class Cm_Cache_Backend_File extends Zend_Cache_Backend_File
         }
         foreach ($glob as $file)  {
             if (is_file($file)) {
-                switch ($mode) {
-                    case Zend_Cache::CLEANING_MODE_ALL:
-                        $result = @unlink($file) && $result;
-                        continue;
+                if ($mode == Zend_Cache::CLEANING_MODE_ALL) {
+                    $result = @unlink($file) && $result;
+                    continue;
                 }
 
                 $id = $this->_fileNameToId(basename($file));
@@ -453,16 +454,14 @@ class Cm_Cache_Backend_File extends Zend_Cache_Backend_File
                     @unlink($file);
                     continue;
                 }
-                switch ($mode) {
-                    case Zend_Cache::CLEANING_MODE_OLD:
-                        if (time() > $metadatas['expire']) {
-                            $result = $this->_remove($file) && $result;
-                            $result = $this->_updateIdsTags(array($id), explode(',', $metadatas['tags']), 'diff') && $result;
-                        }
-                        continue;
-                    default:
-                        Zend_Cache::throwException('Invalid mode for clean() method');
-                        break;
+                if ($mode == Zend_Cache::CLEANING_MODE_OLD) {
+                    if (time() > $metadatas['expire']) {
+                        $result = $this->_remove($file) && $result;
+                        $result = $this->_updateIdsTags(array($id), explode(',', $metadatas['tags']), 'diff') && $result;
+                    }
+                    continue;
+                } else {
+                    Zend_Cache::throwException('Invalid mode for clean() method.');
                 }
             }
             if ((is_dir($file)) and ($this->_options['hashed_directory_level']>0)) {
@@ -563,7 +562,7 @@ class Cm_Cache_Backend_File extends Zend_Cache_Backend_File
                 break;
             case Zend_Cache::CLEANING_MODE_MATCHING_ANY_TAG:
                 foreach ($tags as $tag) {
-                    $ids = $ids + $this->_getTagIds($tag);
+                    $ids = array_merge($ids,$this->_getTagIds($tag));
                 }
                 $ids = array_unique($ids);
                 break;
@@ -591,11 +590,12 @@ class Cm_Cache_Backend_File extends Zend_Cache_Backend_File
      */
     protected function _tagPath()
     {
-        $path = $this->_options['cache_dir'] . DIRECTORY_SEPARATOR . $this->_options['file_name_prefix']. '--tags' . DIRECTORY_SEPARATOR;
+        $path = $this->_options['cache_dir'] . DIRECTORY_SEPARATOR . $this->_options['file_name_prefix']. '-tags' . DIRECTORY_SEPARATOR;
         if ( ! $this->_isTagDirChecked) {
             if ( ! is_dir($path)) {
-                @mkdir($path, $this->_options['hashed_directory_perm']);
-                @chmod($path, $this->_options['hashed_directory_perm']); // see #ZF-320 (this line is required in some configurations)
+                if (@mkdir($path, $this->_options['use_chmod'] ? $this->_options['directory_mode'] : 0777) && $this->_options['use_chmod']) {
+                    @chmod($path, $this->_options['directory_mode']); // see #ZF-320 (this line is required in some configurations)
+                }
             }
             $this->_isTagDirChecked = true;
         }
@@ -616,8 +616,8 @@ class Cm_Cache_Backend_File extends Zend_Cache_Backend_File
         if( ! $ids) {
             return array();
         }
-        $ids = substr($ids, 0, strrpos($ids, "\n"));
-        return explode("\n", $ids);
+        $ids = trim(substr($ids, 0, strrpos($ids, "\n")));
+        return $ids ? explode("\n", $ids) : array();
     }
 
     /**
@@ -673,8 +673,33 @@ class Cm_Cache_Backend_File extends Zend_Cache_Backend_File
     protected function _filePutContents($file, $string)
     {
         $result = @file_put_contents($file, $string, $this->_options['file_locking'] ? LOCK_EX : 0);
-        $result && chmod($file, $this->_options['cache_file_perm']);
+        if ($result && $this->_options['use_chmod']) {
+            @chmod($file, $this->_options['file_mode']);
+        }
         return $result;
+    }
+
+    /**
+     * Make the directory structure for the given id
+     *
+     * @param string $id cache id
+     * @return boolean true
+     */
+    protected function _recursiveMkdirAndChmod($id)
+    {
+        if ($this->_options['hashed_directory_level'] <=0) {
+            return true;
+        }
+        $partsArray = $this->_path($id, true);
+        foreach ($partsArray as $part) {
+            if (!is_dir($part)) {
+                @mkdir($part, $this->_options['use_chmod'] ? $this->_options['directory_mode'] : 0777);
+                if ($this->_options['use_chmod']) {
+                    @chmod($part, $this->_options['directory_mode']); // see #ZF-320 (this line is required in some configurations)
+                }
+            }
+        }
+        return true;
     }
 
     /**
